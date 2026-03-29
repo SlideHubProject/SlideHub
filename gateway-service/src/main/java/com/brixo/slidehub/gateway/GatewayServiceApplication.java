@@ -7,6 +7,8 @@ import org.springframework.cloud.config.server.EnableConfigServer;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
+
+
 @SpringBootApplication
 @EnableConfigServer
 @EnableScheduling
