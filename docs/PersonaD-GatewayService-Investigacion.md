@@ -1,67 +1,107 @@
-nvestigación: Gateway Service & Config Server
-Proyecto: SlideHub
 
-Responsable: Persona D (Sharon)
+## PersonaD-GatewayService-Investigacion.md
 
-Fecha: Marzo 2026
+Documento de investigación: Gateway Service & Config Server
 
-1. Introducción y Premisa
-El Gateway Service y el Config Server constituyen la columna vertebral de la arquitectura de microservicios de SlideHub. Su implementación resuelve dos problemas críticos:
+## 1. Análisis del Gateway Service
 
-Enrutamiento Centralizado: Evita que el cliente (Frontend) necesite conocer las direcciones IP o puertos individuales de cada microservicio.
+**El Gateway Service actúa como punto de entrada principal del sistema SlideHub.**
 
-Configuración Dinámica: Permite gestionar parámetros de todos los servicios desde un único punto, facilitando el mantenimiento y la escalabilidad.
+Encargado de enrutar las solicitudes hacia los diferentes microservicios internos. Su función principal es centralizar el acceso, mejorar la seguridad y simplificar la comunicación entre cliente y servicios backend.
 
-2. Análisis de Documentación Interna
-Basado en la revisión de AGENTS.md (§2.4) y CLAUDE.md (§12).
+Este servicio está construido bajo el patrón de API Gateway, probablemente usando tecnologías como Spring Cloud Gateway, lo que permite manejar rutas dinámicas, filtros y balanceo de carga.
 
-2.1 Spring Cloud Gateway
-El servicio utiliza Spring Cloud Gateway para gestionar el tráfico de red.
+## 2. Rutas (Rutes)
 
-Predicados: Se encargan de validar si una petición entrante cumple con ciertas condiciones (ej. el path empieza por /api/v1/).
+**El gateway define rutas que redirigen las peticiones HTTP a servicios específicos según el path:**
 
-Filtros: Permiten modificar la petición antes de ser enviada al servicio destino o la respuesta antes de llegar al usuario (ej. añadir cabeceras de seguridad).
+/state/** → redirige a State Service
+/ui/** → redirige a UI Service
+/ai/** → redirige a AI Service
 
-2.2 Config Server
-Actúa como un repositorio centralizado de configuraciones.
+Estas rutas permiten desacoplar el cliente del backend real, ocultando la arquitectura interna.
 
-Almacenamiento: [Definir si se usa Git o sistema de archivos local].
+Además, el gateway puede incluir:
 
-Seguridad: Centraliza el manejo de credenciales de base de datos y llaves API.
+Filtros de autenticación (JWT/OAuth2)
+Logs de tráfico
+Manejo de errores centralizado
+⚙️ 3. Config Server
 
-3. Estrategia de Despliegue en Render
-Referencia: DEPLOYMENT.md
+El Config Server centraliza la configuración de todos los microservicios.
 
-Para garantizar un despliegue exitoso en Render, se deben considerar los siguientes puntos:
+Funciones principales:
 
-Build Command: Uso de ./mvnw clean package -DskipTests para generar el ejecutable.
+Proveer variables de entorno y propiedades
+Manejar perfiles (dev, prod)
+Permitir cambios sin modificar código
 
-Start Command: Ejecución mediante java -jar target/*.jar.
+Generalmente funciona conectado a un repositorio (ej: Git), desde donde cada servicio obtiene su configuración al iniciar.
 
-Variables de Entorno (Secrets): * SPRING_PROFILES_ACTIVE: Para alternar entre entornos (prod/test).
+En este proyecto, variables como:
 
-CONFIG_SERVER_URL: Dirección donde el Gateway buscará sus parámetros.
+URLs de servicios (STATE_SERVICE_URL, AI_SERVICE_URL)
+Credenciales externas
+Configuración de base de datos
 
-PORT: Render asigna un puerto dinámico que Spring Boot debe capturar.
+son gestionadas mediante variables de entorno en el despliegue.
 
-4. Diseño de Contribución Práctica
-4.1 Ruta de Prueba (Dummy Route)
-Se planea implementar una ruta en RoutesConfig.java para validar el flujo de datos:
+🚀 4. Despliegue en Render
 
-Path: /test
+El sistema se despliega en Render usando contenedores Docker. Existen dos formas:
 
-Destino: Servicio Mock / Externo.
+✔️ Opción recomendada: Automática (Blueprint)
+Se usa un archivo render.yaml
+Render detecta servicios automáticamente
+Despliega los 4 servicios:
+gateway
+state
+ui
+ai
+⚙️ Opción manual:
 
-Propósito: Verificar que el Gateway intercepta y redirige correctamente sin pasar por la lógica de negocio compleja.
+Se crean servicios individuales en Render:
 
-4.2 Perfil de Testing Local
-Configuración de application-local.properties para permitir pruebas rápidas en la máquina del desarrollador sin afectar las variables de producción.
+Tipo: Web Service
+Entorno: Docker
+Conectado a GitHub
 
-5. Glosario de Conceptos Aprendidos
-Microservicios: Arquitectura de software distribuida.
+Cada servicio requiere variables específicas:
 
-API Gateway: Punto de entrada único al sistema.
+Gateway:
+STATE_SERVICE_URL
+UI_SERVICE_URL
+AI_SERVICE_URL
+Otros servicios:
+Bases de datos (PostgreSQL, MongoDB)
+APIs externas (Gemini, Groq)
+OAuth (Google, GitHub)
+🌐 5. Dominio y Acceso
 
-Externalized Configuration: Separación del código y los parámetros de configuración.
+El gateway expone el sistema completo a través de un dominio personalizado:
 
-PaaS (Render): Plataforma para despliegue simplificado en la nube.
+Dominio: slide.lat
+Configurado mediante CNAME en DNS
+Todas las peticiones pasan por el gateway
+📊 6. Monitoreo y Salud
+
+Cada servicio incluye endpoints de monitoreo:
+
+/actuator/health
+
+Permite verificar:
+
+Estado del servicio
+Conectividad con dependencias
+
+Logs disponibles en Render para depuración.
+
+⚠️ 7. Problemas comunes
+❌ Error de build → fallas en Maven
+❌ Conexión rechazada → URLs mal configuradas
+❌ Timeout DB → credenciales incorrectas
+❌ MongoDB error → URI incompleta
+✅ 8. Conclusión
+
+El Gateway Service es un componente clave en la arquitectura de SlideHub, ya que centraliza el acceso, mejora la seguridad y facilita la comunicación entre microservicios. Su despliegue en Render permite escalar fácilmente el sistema y mantener una configuración flexible mediante variables de entorno.
+
