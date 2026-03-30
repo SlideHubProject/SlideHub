@@ -14,7 +14,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class GatewayServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(GatewayServiceApplication.class, args);
-    }
+            SpringApplication.run(GatewayServiceApplication.class, args);
+                }
 
-}
+                }
