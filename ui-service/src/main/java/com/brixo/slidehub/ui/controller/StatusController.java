@@ -21,4 +21,15 @@ public class StatusController {
         this.statusChecksService = statusChecksService;
     }
 
-   
+    @GetMapping("/status")
+    public String statusView(Model model) {
+        model.addAttribute("pollIntervalMs", statusPollIntervalMs);
+        return "status";
+    }
+
+    @GetMapping("/status/api/checks")
+    @ResponseBody
+    public ResponseEntity<StatusChecksResponse> getStatusChecks() {
+        return ResponseEntity.ok(statusChecksService.getChecks());
+    }
+}
