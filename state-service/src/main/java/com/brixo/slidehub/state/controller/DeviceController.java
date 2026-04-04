@@ -19,7 +19,7 @@ import java.util.List;
 @RequestMapping("/api/devices")
 public class DeviceController {
 
-    private final DeviceRegistryService deviceRegistryService; 
+    private final DeviceRegistryService deviceRegistryService;
 
     public DeviceController(DeviceRegistryService deviceRegistryService) {
         this.deviceRegistryService = deviceRegistryService;
