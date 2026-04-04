@@ -6,11 +6,14 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Cliente HTTP para Google Gemini API (CLAUDE.md §9.1, PLAN-EXPANSION.md Fase
@@ -28,6 +31,12 @@ public class GeminiService {
 
     @Value("${slidehub.ai.gemini.api-key}")
     private String apiKey;
+
+    @Value("${slidehub.ai.gemini.model:gemini-2.0-flash}")
+    private String primaryModel;
+
+    @Value("${slidehub.ai.gemini.fallback-models:gemini-1.5-flash,gemini-1.5-flash-latest}")
+    private String fallbackModels;
 
     public GeminiService(@Value("${slidehub.ai.gemini.base-url}") String baseUrl) {
         this.geminiClient = WebClient.builder()
@@ -126,23 +135,7 @@ public class GeminiService {
      *         buildSystem, summary, structure, deploymentHints, dockerfile)
      */
     public Map<String, Object> analyzeRepo(String repoUrl) {
-        String prompt = """
-                Analiza el repositorio de GitHub en %s y responde SOLO con un objeto JSON
-                con exactamente estas claves (sin texto adicional antes ni después):
-                {
-                  "language": "Lenguaje principal (Java, PHP, JavaScript, TypeScript, Python, etc.)",
-                  "framework": "Framework principal (Spring Boot, Laravel, Next.js, Django, etc.)",
-                  "technologies": ["lista", "de", "tecnologías", "y", "librerías"],
-                  "buildSystem": "Maven | Gradle | npm | Composer | pip | etc.",
-                  "ports": [8080],
-                  "environment": ["DATABASE_URL", "REDIS_HOST"],
-                  "databases": ["PostgreSQL", "Redis"],
-                  "summary": "Resumen de 1-2 oraciones del propósito del proyecto.",
-                  "structure": "Descripción de la arquitectura (microservicios, MVC, monolito, etc.).",
-                  "deploymentHints": "Recomendaciones para desplegar en Render, Vercel o Railway.",
-                  "dockerfile": "Contenido completo de un Dockerfile apropiado para este proyecto."
-                }
-                """.formatted(repoUrl);
+        String prompt = buildRepoAnalysisPrompt(repoUrl, null);
 
         var requestBody = Map.of(
                 "contents", List.of(Map.of(
@@ -174,23 +167,11 @@ public class GeminiService {
      * Devuelve la respuesta cruda como texto (JSON o texto según generationConfig).
      */
     public String analyzeRepoRaw(String repoUrl) {
-        String prompt = """
-                Analiza el repositorio de GitHub en %s y responde SOLO con un objeto JSON
-                con exactamente estas claves (sin texto adicional antes ni después):
-                {
-                  "language": "Lenguaje principal (Java, PHP, JavaScript, TypeScript, Python, etc.)",
-                  "framework": "Framework principal (Spring Boot, Laravel, Next.js, Django, etc.)",
-                  "technologies": ["lista", "de", "tecnologías"],
-                  "buildSystem": "Maven | Gradle | npm | Composer | pip | etc.",
-                  "ports": [8080],
-                  "environment": ["DATABASE_URL", "REDIS_HOST"],
-                  "databases": ["PostgreSQL", "Redis"],
-                  "summary": "Resumen de 1-2 oraciones del propósito del proyecto.",
-                  "structure": "Descripción de la arquitectura (microservicios, MVC, monolito, etc.).",
-                  "deploymentHints": "Recomendaciones para desplegar en Render / Vercel / Railway.",
-                  "dockerfile": "Contenido completo de un Dockerfile apropiado para este proyecto."
-                }
-                """.formatted(repoUrl);
+        return analyzeRepoRaw(repoUrl, null);
+    }
+
+    public String analyzeRepoRaw(String repoUrl, String repositoryContext) {
+        String prompt = buildRepoAnalysisPrompt(repoUrl, repositoryContext);
 
         var requestBody = Map.of(
                 "contents", List.of(Map.of(
@@ -214,15 +195,75 @@ public class GeminiService {
      */
     @SuppressWarnings("unchecked")
     private String callGemini(Map<?, ?> requestBody) {
-        Map<?, ?> response = geminiClient.post()
-                .uri("/v1beta/models/gemini-1.5-flash:generateContent?key={key}", apiKey)
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(requestBody)
-                .retrieve()
-                .bodyToMono(Map.class)
-                .block();
+        List<String> modelCandidates = buildModelCandidates();
+        RuntimeException lastError = null;
 
-        return extractTextFromResponse(response);
+        for (String model : modelCandidates) {
+            try {
+                Map<?, ?> response = geminiClient.post()
+                        .uri("/v1beta/models/{model}:generateContent?key={key}", model, apiKey)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(requestBody)
+                        .retrieve()
+                        .bodyToMono(Map.class)
+                        .block();
+
+                return extractTextFromResponse(response);
+            } catch (WebClientResponseException ex) {
+                if (ex.getStatusCode().value() == 404) {
+                    log.warn("Modelo Gemini no disponible '{}'. Probando fallback...", model);
+                    lastError = new RuntimeException("Modelo no disponible: " + model, ex);
+                    continue;
+                }
+                throw new RuntimeException("Gemini API error HTTP " + ex.getStatusCode().value() + ": "
+                        + trimBody(ex.getResponseBodyAsString()), ex);
+            } catch (Exception ex) {
+                throw new RuntimeException("Error invocando Gemini con modelo " + model + ": " + ex.getMessage(), ex);
+            }
+        }
+
+        throw new RuntimeException(
+                "Ningún modelo Gemini disponible. Modelos probados: " + String.join(", ", modelCandidates),
+                lastError);
+    }
+
+    private List<String> buildModelCandidates() {
+        Set<String> models = new LinkedHashSet<>();
+        addModelIfPresent(models, primaryModel);
+
+        if (fallbackModels != null && !fallbackModels.isBlank()) {
+            String[] split = fallbackModels.split(",");
+            for (String model : split) {
+                addModelIfPresent(models, model);
+            }
+        }
+
+        addModelIfPresent(models, "gemini-2.0-flash");
+        addModelIfPresent(models, "gemini-1.5-flash");
+        addModelIfPresent(models, "gemini-1.5-flash-latest");
+
+        return new ArrayList<>(models);
+    }
+
+    private void addModelIfPresent(Set<String> models, String model) {
+        if (model == null) {
+            return;
+        }
+        String trimmed = model.trim();
+        if (!trimmed.isBlank()) {
+            models.add(trimmed);
+        }
+    }
+
+    private String trimBody(String body) {
+        if (body == null || body.isBlank()) {
+            return "sin detalle";
+        }
+        String normalized = body.replace('\n', ' ').trim();
+        if (normalized.length() <= 240) {
+            return normalized;
+        }
+        return normalized.substring(0, 240) + "...";
     }
 
     @SuppressWarnings("unchecked")
@@ -259,5 +300,51 @@ public class GeminiService {
             text = text.substring(0, text.length() - 3);
         }
         return text.strip();
+    }
+
+    private String buildRepoAnalysisPrompt(String repoUrl, String repositoryContext) {
+        if (repositoryContext == null || repositoryContext.isBlank()) {
+            return """
+                    Analiza el repositorio de GitHub en %s y responde SOLO con un objeto JSON
+                    con exactamente estas claves (sin texto adicional antes ni después):
+                    {
+                        "language": "Lenguaje principal (Java, PHP, JavaScript, TypeScript, Python, etc.)",
+                        "framework": "Framework principal (Spring Boot, Laravel, Next.js, Django, etc.)",
+                        "technologies": ["lista", "de", "tecnologías", "y", "librerías"],
+                        "buildSystem": "Maven | Gradle | npm | Composer | pip | etc.",
+                        "ports": [8080],
+                        "environment": ["DATABASE_URL", "REDIS_HOST"],
+                        "databases": ["PostgreSQL", "Redis"],
+                        "summary": "Resumen de 1-2 oraciones del propósito del proyecto.",
+                        "structure": "Descripción de la arquitectura (microservicios, MVC, monolito, etc.).",
+                        "deploymentHints": "Recomendaciones para desplegar en Render, Vercel o Railway.",
+                        "dockerfile": "Contenido completo de un Dockerfile apropiado para este proyecto."
+                    }
+                    """.formatted(repoUrl);
+        }
+
+        return """
+                Eres un analista técnico de repositorios. Debes inferir el stack del proyecto
+                usando el snapshot de GitHub API provisto, sin inventar archivos fuera del listado.
+
+                URL del repositorio: %s
+
+                %s
+
+                Responde SOLO con un objeto JSON con exactamente estas claves:
+                {
+                    "language": "Lenguaje principal (Java, PHP, JavaScript, TypeScript, Python, etc.)",
+                    "framework": "Framework principal (Spring Boot, Laravel, Next.js, Django, etc.)",
+                    "technologies": ["lista", "de", "tecnologías", "y", "librerías"],
+                    "buildSystem": "Maven | Gradle | npm | Composer | pip | etc.",
+                    "ports": [8080],
+                    "environment": ["DATABASE_URL", "REDIS_HOST"],
+                    "databases": ["PostgreSQL", "Redis"],
+                    "summary": "Resumen de 1-2 oraciones del propósito del proyecto.",
+                    "structure": "Descripción de la arquitectura (microservicios, MVC, monolito, etc.).",
+                    "deploymentHints": "Recomendaciones para desplegar en Render / Vercel / Railway.",
+                    "dockerfile": "Contenido completo de un Dockerfile apropiado para este proyecto."
+                }
+                """.formatted(repoUrl, repositoryContext);
     }
 }
